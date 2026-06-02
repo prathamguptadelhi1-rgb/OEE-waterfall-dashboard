@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom css for metric positioning and card structures
+# Custom CSS for metric positioning and card structures
 st.markdown("""
 <style>
     .metric-card {
@@ -35,7 +35,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------------------------------------------------------
-# DATA INGESTION & PIPELINE ENGINE
+# DATA INGESTION & PIPELINE ENGINE (SUPPORTS CSV & XLSX)
 # ----------------------------------------------------------------
 @st.cache_data
 def load_and_clean_data(file_or_path, is_sample=False):
@@ -68,9 +68,13 @@ def load_and_clean_data(file_or_path, is_sample=False):
         }
         df = pd.DataFrame(data)
     else:
-        df = pd.read_csv(file_or_path)
+        # Check the file extension and use the appropriate pandas reader
+        if file_or_path.name.endswith('.xlsx') or file_or_path.name.endswith('.xls'):
+            df = pd.read_excel(file_or_path)
+        else:
+            df = pd.read_csv(file_or_path)
         
-    # Standardize column headers by wiping out newline flags
+    # Standardize column headers by wiping out newline flags and spaces
     df.columns = [col.replace('\n', ' ').replace('  ', ' ').strip() for col in df.columns]
     
     # Calculate downstream parameters dynamically if missing from input file mapping
@@ -100,7 +104,8 @@ st.sidebar.image("https://img.icons8.com/external-flatart-icons-flat-flatarticon
 st.sidebar.title("OEE Control Center")
 st.sidebar.markdown("---")
 
-uploaded_file = st.sidebar.file_uploader("Upload Factory Production Log (.CSV)", type=["csv"])
+# Updated the file uploader to accept both CSV and XLSX formats
+uploaded_file = st.sidebar.file_uploader("Upload Factory Production Log", type=["csv", "xlsx"])
 use_sample = st.sidebar.checkbox("Load Production Sample Environment", value=True if not uploaded_file else False)
 
 if uploaded_file is not None:
@@ -322,11 +327,11 @@ with tab_simulator:
         
         # Recalculate global metrics under optimized state bounds
         sim_net_operating = (df_filtered['Net Available Time'].sum()) - simulated_unplanned
-        sim_ideal_operating = df_filtered['Ideal Operating Time'].sum() # assume production potential limits
+        sim_ideal_operating = df_filtered['Ideal Operating Time'].sum()
         sim_good_units = current_total_produced - simulated_scrap
         
         sim_avail = sim_net_operating / (df_filtered['Net Available Time'].sum())
-        sim_perf = avg_perf # Hold performance static to maintain ceteris paribus modeling constraints
+        sim_perf = avg_perf # Hold performance static
         sim_qual = sim_good_units / current_total_produced
         sim_oee = sim_avail * sim_perf * sim_qual
         
