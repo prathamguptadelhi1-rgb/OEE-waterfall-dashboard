@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 
 # ----------------------------------------------------------------
 # PAGE CONFIGURATION & THEME PROFILE
@@ -35,12 +34,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------------------------------------------------------
-# DATA INGESTION & PIPELINE ENGINE (SUPPORTS CSV & XLSX)
+# FAIL-SAFE DATA INGESTION & PIPELINE ENGINE
 # ----------------------------------------------------------------
 @st.cache_data
 def load_and_clean_data(file_or_path, is_sample=False):
     if is_sample:
-        # Generates a comprehensive multi-row template reflecting user's structural columns
         np.random.seed(42)
         rows = 15
         sched_time = [480] * rows
@@ -68,32 +66,64 @@ def load_and_clean_data(file_or_path, is_sample=False):
         }
         df = pd.DataFrame(data)
     else:
-        # Check the file extension and use the appropriate pandas reader
         if file_or_path.name.endswith('.xlsx') or file_or_path.name.endswith('.xls'):
             df = pd.read_excel(file_or_path)
         else:
             df = pd.read_csv(file_or_path)
         
-    # Standardize column headers by wiping out newline flags and spaces
-    df.columns = [col.replace('\n', ' ').replace('  ', ' ').strip() for col in df.columns]
+    # Drop rows that are completely empty (common at the bottom of Excel exports)
+    df = df.dropna(how='all')
+
+    # Strip white spaces, newlines, and quotes from column headers
+    df.columns = [str(col).replace('\n', ' ').replace('  ', ' ').strip().replace('"', '') for col in df.columns]
     
-    # Calculate downstream parameters dynamically if missing from input file mapping
-    if 'Net Available Time' not in df.columns:
-        df['Net Available Time'] = df['Scheduled Production Time'] - df['Planned Downtime']
-    if 'Net Operating Time' not in df.columns:
-        df['Net Operating Time'] = df['Net Available Time'] - df['Unplanned Downtime']
-    if 'Ideal Operating Time' not in df.columns:
-        df['Ideal Operating Time'] = (df['Total Quantity Produced'] * df['Cycle Time (Seconds) Look Up / Override']) / 60
-    if 'Lost "Quality" Time' not in df.columns:
-        df['Lost "Quality" Time'] = (df['Total Quantity Defective'] * df['Cycle Time (Seconds) Look Up / Override']) / 60
+    # Target Key Columns for Waterfall Math
+    target_cols = [
+        'Cycle Time (Seconds) Look Up / Override', 
+        'Scheduled Production Time', 
+        'Planned Downtime', 
+        'Unplanned Downtime', 
+        'Total Quantity Produced', 
+        'Total Quantity Defective'
+    ]
+    
+    # Dynamic Mapping: If exact matching column isn't found, look for keyword substrings
+    col_mapping = {}
+    for target in target_cols:
+        if target not in df.columns:
+            # Fallback search if names are slightly shifted
+            keyword = target.split(' ')[0]
+            matched = [c for c in df.columns if keyword.lower() in c.lower()]
+            if matched:
+                col_mapping[matched[0]] = target
+    if col_mapping:
+        df = df.rename(columns=col_mapping)
         
-    # Pillar Ratios
-    df['Availability (A)'] = df['Net Operating Time'] / df['Net Available Time']
-    df['Performance (P)'] = df['Ideal Operating Time'] / df['Net Operating Time']
-    df['Quality (Q)'] = (df['Total Quantity Produced'] - df['Total Quantity Defective']) / df['Total Quantity Produced']
+    # FORCED NUMERIC CONVERSION: Fixes the calculation errors in the screenshot
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            # Turn non-numeric cells into NaN, then replace all NaN values with 0
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Fill remaining blank numeric data rows safely with 0
+    df = df.fillna(0)
+    
+    # Re-calculate calculations to bypass corrupted raw sheet formulas
+    df['Net Available Time'] = df['Scheduled Production Time'] - df['Planned Downtime']
+    df['Net Operating Time'] = df['Net Available Time'] - df['Unplanned Downtime']
+    df['Ideal Operating Time'] = (df['Total Quantity Produced'] * df['Cycle Time (Seconds) Look Up / Override']) / 60
+    df['Lost "Quality" Time'] = (df['Total Quantity Defective'] * df['Cycle Time (Seconds) Look Up / Override']) / 60
+        
+    # Protect against zero division errors if a shift has 0 runtime values
+    df['Availability (A)'] = np.where(df['Net Available Time'] > 0, df['Net Operating Time'] / df['Net Available Time'], 0)
+    df['Performance (P)'] = np.where(df['Net Operating Time'] > 0, df['Ideal Operating Time'] / df['Net Operating Time'], 0)
+    df['Quality (Q)'] = np.where(df['Total Quantity Produced'] > 0, (df['Total Quantity Produced'] - df['Total Quantity Defective']) / df['Total Quantity Produced'], 0)
     df['OEE (A * P * Q)'] = df['Availability (A)'] * df['Performance (P)'] * df['Quality (Q)']
     
-    # Add sequential run designation index for tracking visualizations
+    # Cap percentage bounds to realistic limits (0.0 to 1.0)
+    for p_col in ['Availability (A)', 'Performance (P)', 'Quality (Q)', 'OEE (A * P * Q)']:
+        df[p_col] = df[p_col].clip(0.0, 1.0)
+        
     df.insert(0, 'Run ID', [f"Shift_Run_{i+1:02d}" for i in range(len(df))])
     return df
 
@@ -104,7 +134,6 @@ st.sidebar.image("https://img.icons8.com/external-flatart-icons-flat-flatarticon
 st.sidebar.title("OEE Control Center")
 st.sidebar.markdown("---")
 
-# Updated the file uploader to accept both CSV and XLSX formats
 uploaded_file = st.sidebar.file_uploader("Upload Factory Production Log", type=["csv", "xlsx"])
 use_sample = st.sidebar.checkbox("Load Production Sample Environment", value=True if not uploaded_file else False)
 
@@ -113,10 +142,9 @@ if uploaded_file is not None:
 elif use_sample:
     raw_df = load_and_clean_data(None, is_sample=True)
 else:
-    st.info("Please stage a valid operational template log to populate the processing canvas.")
+    st.info("Please stage an operational log template (.csv or .xlsx) to populate the canvas.")
     st.stop()
 
-# Global Run filtering limits inside sidebar panel
 st.sidebar.markdown("---")
 st.sidebar.subheader("Global Canvas Filters")
 selected_runs = st.sidebar.multiselect("Isolate Specific Assets / Runs", options=raw_df['Run ID'].tolist(), default=raw_df['Run ID'].tolist())
@@ -142,16 +170,14 @@ tab_summary, tab_waterfall, tab_levers, tab_simulator = st.tabs([
 with tab_summary:
     st.subheader("Aggregate Factory Operational Performance")
     
-    # Calculate global tracking averages
     avg_oee = df_filtered['OEE (A * P * Q)'].mean()
     avg_avail = df_filtered['Availability (A)'].mean()
     avg_perf = df_filtered['Performance (P)'].mean()
     avg_qual = df_filtered['Quality (Q)'].mean()
     
-    # Dynamic Metric Cards
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        st.markdown(f"<div class='metric-card'><strong>Global OEE Target (vs 85% Benchmark)</strong><br><span style='font-size:28px; font-weight:bold; color:#636EFA;'>{avg_oee*100:.2f}%</span></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='metric-card'><strong>Global OEE Target (vs 85%)</strong><br><span style='font-size:28px; font-weight:bold; color:#636EFA;'>{avg_oee*100:.2f}%</span></div>", unsafe_allow_html=True)
     with m2:
         st.markdown(f"<div class='metric-card'><strong>Availability Index</strong><br><span style='font-size:28px; font-weight:bold; color:#00CC96;'>{avg_avail*100:.2f}%</span></div>", unsafe_allow_html=True)
     with m3:
@@ -161,7 +187,6 @@ with tab_summary:
         
     st.markdown("### Run-over-Run Optimization Roadmap Traces")
     
-    # Generate timeline visualization plots via Express engine
     fig_trends = go.Figure()
     fig_trends.add_trace(go.Scatter(x=df_filtered['Run ID'], y=df_filtered['OEE (A * P * Q)']*100, name='Overall OEE', line=dict(color='#636EFA', width=4)))
     fig_trends.add_trace(go.Scatter(x=df_filtered['Run ID'], y=df_filtered['Availability (A)']*100, name='Availability', line=dict(color='#00CC96', dash='dash')))
@@ -169,7 +194,7 @@ with tab_summary:
     fig_trends.add_trace(go.Scatter(x=df_filtered['Run ID'], y=df_filtered['Quality (Q)']*100, name='Quality', line=dict(color='#AB63FA', dash='longdash')))
     
     fig_trends.add_hline(y=85.0, line_dash="dash", line_color="red", annotation_text="World Class Target Boundary (85%)")
-    fig_trends.update_layout(yaxis_title="Efficiency Percentage (%)", xaxis_title="Production Batches / Asset Runs", height=450, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    fig_trends.update_layout(yaxis_title="Efficiency Percentage (%)", xaxis_title="Production Batches", height=450, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig_trends, use_container_width=True)
 
 # ----------------------------------------------------------------
@@ -181,7 +206,6 @@ with tab_waterfall:
     target_shift = st.selectbox("Select Target Run Asset to Isolate Vector Map:", options=df_filtered['Run ID'].tolist())
     row = df_filtered[df_filtered['Run ID'] == target_shift].iloc[0]
     
-    # Time variables extract
     scheduled_production = row['Scheduled Production Time']
     planned_downtime = row['Planned Downtime']
     net_available = row['Net Available Time']
@@ -190,15 +214,13 @@ with tab_waterfall:
     ideal_operating = row['Ideal Operating Time']
     lost_quality_time = row['Lost "Quality" Time']
     
-    # Calculate performance time losses explicitly
-    performance_loss = net_operating - ideal_operating
-    fully_productive = ideal_operating - lost_quality_time
+    performance_loss = max(0, net_operating - ideal_operating)
+    fully_productive = max(0, ideal_operating - lost_quality_time)
     
-    # Construct plotting metrics for core waterfall architecture
     x_steps = [
         "Scheduled Production", "Planned Downtime", "Net Available Time",
         "Unplanned Breakdowns", "Net Operating Time", "Performance Speed Losses",
-        "Ideal Operating Time", "Scrap & Quality Defect Losses", "Fully Productive Time"
+        "Ideal Operating Time", "Scrap Losses", "Fully Productive Time"
     ]
     
     y_values = [
@@ -207,20 +229,14 @@ with tab_waterfall:
         0, -lost_quality_time, 0
     ]
     
-    measure_types = ["absolute", "relative", "total", "relative", "total", "relative", "total", "relative", "total"]
-    
-    text_labels = [
-        f"{scheduled_production:.1f}m", f"-{planned_downtime:.1f}m", f"{net_available:.1f}m",
-        f"-{unplanned_downtime:.1f}m", f"{net_operating:.1f}m", f"-{performance_loss:.1f}m",
-        f"{ideal_operating:.1f}m", f"-{lost_quality_time:.1f}m", f"{fully_productive:.1f}m"
-    ]
-    
     fig_wf = go.Figure(go.Waterfall(
         orientation = "v",
-        measure = measure_types,
+        measure = ["absolute", "relative", "total", "relative", "total", "relative", "total", "relative", "total"],
         x = x_steps,
         y = y_values,
-        text = text_labels,
+        text = [f"{scheduled_production:.1f}m", f"-{planned_downtime:.1f}m", f"{net_available:.1f}m",
+                f"-{unplanned_downtime:.1f}m", f"{net_operating:.1f}m", f"-{performance_loss:.1f}m",
+                f"{ideal_operating:.1f}m", f"-{lost_quality_time:.1f}m", f"{fully_productive:.1f}m"],
         textposition = "outside",
         decreasing = {"marker":{"color": "#DC3545"}},
         increasing = {"marker":{"color": "#28A745"}},
@@ -228,12 +244,7 @@ with tab_waterfall:
         connector = {"line":{"color":"#6c757d", "width":1}}
     ))
     
-    fig_wf.update_layout(
-        yaxis_title="Minutes Assigned",
-        height=550,
-        margin=dict(t=30, b=30, l=10, r=10),
-        xaxis=dict(tickangle=-15)
-    )
+    fig_wf.update_layout(yaxis_title="Minutes Assigned", height=550, xaxis=dict(tickangle=-15))
     st.plotly_chart(fig_wf, use_container_width=True)
 
 # ----------------------------------------------------------------
@@ -241,59 +252,45 @@ with tab_waterfall:
 # ----------------------------------------------------------------
 with tab_levers:
     st.subheader("Prescriptive Engineering Interventions & Priorities")
-    st.markdown("The system analyzes current runtime losses to prioritize and display action plans for the plant floor:")
     
-    # Calculate global baseline means for routing thresholds
-    m_avail = df_filtered['Availability (A)'].mean()
-    m_perf = df_filtered['Performance (P)'].mean()
-    m_qual = df_filtered['Quality (Q)'].mean()
-    
-    # Establish dynamic data sorting to isolate root constraint bottlenecks
     levers = []
     if m_avail < 0.90:
         levers.append({
             "prio": 1 if m_avail < min(m_perf, m_qual) else 2,
-            "metric": "Availability",
-            "val": m_avail,
+            "metric": "Availability", "val": m_avail,
             "title": "Lever: Single-Minute Exchange of Die (SMED) & Asset Maintenance Automation",
-            "type": "Danger",
             "color": "#DC3545",
-            "body": "Unplanned breakdown hours and setup steps are impacting production capacity. Group tasks into Internal vs External steps. Stage raw inputs, tooling packages, and parameters while the asset is executing the prior line run. Audit your Autonomous Maintenance tracker to confirm frontline operators are completing daily cleanup and pre-failure inspection checks."
+            "body": "Unplanned breakdown hours and setup steps are impacting production capacity. Group tasks into Internal vs External steps. Stage raw inputs, tooling packages, and parameters while the asset is executing the prior line run."
         })
     if m_perf < 0.95:
         levers.append({
             "prio": 1 if m_perf < min(m_avail, m_qual) else 2,
-            "metric": "Performance",
-            "val": m_perf,
+            "metric": "Performance", "val": m_perf,
             "title": "Lever: SOP Standardization, Cycle Locking, and Line Buffering",
-            "type": "Warning",
             "color": "#FFC107",
-            "body": "Equipment processing rates are dipping below target design capacities due to frequent micro-stops or intentional operator deceleration. Lock ideal cycle parameters within machine PLCs to prevent manual slowing. Install dynamic line accumulation tables or material conveyor loops to prevent upstream starvation or downstream blockages."
+            "body": "Equipment processing rates are dipping below target design capacities due to frequent micro-stops. Lock ideal cycle parameters within machine PLCs to prevent manual slowing."
         })
     if m_qual < 0.98:
         levers.append({
             "prio": 1 if m_qual < min(m_avail, m_perf) else 2,
-            "metric": "Quality",
-            "val": m_qual,
+            "metric": "Quality", "val": m_qual,
             "title": "Lever: Poka-Yoke Mistake Proofing & Inline SPC Sensor Controls",
-            "type": "Info",
             "color": "#17A2B8",
-            "body": "Defects and rework runs are wasting valuable production time and material costs. Deploy structural Poka-Yoke (Mistake-Proofing) positioning pins or electronic orientation arrays to prevent misaligned processing. Set up Statistical Process Control (SPC) charting on critical machine telemetry parameters (clamping pressures, cylinder temperatures) to alert operators before drifts generate scrap."
+            "body": "Defects and rework runs are wasting valuable production time. Deploy structural Poka-Yoke positioning pins or vision check arrays to prevent misaligned processing."
         })
         
-    # Sort levers by bottleneck severity
     levers = sorted(levers, key=lambda k: k['prio'])
     
     if not levers:
-        st.success("🎉 **All Operational Metrics Balanced!** Running at world-class performance bounds across this shift.")
+        st.success("🎉 All Operational Metrics Balanced! Running at world-class performance.")
     else:
         for l in levers:
             st.markdown(f"""
             <div class='lever-card' style='border-top: 4px solid {l['color']};'>
                 <span style='background-color:{l['color']}; color:white; padding:3px 8px; border-radius:3px; font-size:12px; font-weight:bold;'>PRIORITY {l['prio']}</span>
-                <h4 style='margin-top:8px; color:#212529;'>{l['title']}</h4>
-                <p style='color:#495057; font-size:14px;'><strong>Bottleneck Metric Profile:</strong> Global Mean average drops to <strong>{l['val']*100:.2f}%</strong>.</p>
-                <p style='color:#333333; font-size:14px; line-height:1.6;'>{l['body']}</p>
+                <h4 style='margin-top:8px;'>{l['title']}</h4>
+                <p style='color:#495057; font-size:14px;'>Global Mean average is <strong>{l['val']*100:.2f}%</strong>.</p>
+                <p style='color:#333333; font-size:14px;'>{l['body']}</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -302,60 +299,41 @@ with tab_levers:
 # ----------------------------------------------------------------
 with tab_simulator:
     st.subheader("What-If Capacity Value Simulator")
-    st.markdown("Adjust the sliders below to simulate the financial and capacity upside of optimizing your factory floor metrics.")
     
-    # Sizing metrics aggregate constraints
-    current_planned = df_filtered['Scheduled Production Time'].sum()
     current_unplanned = df_filtered['Unplanned Downtime'].sum()
     current_total_produced = df_filtered['Total Quantity Produced'].sum()
     current_scrap = df_filtered['Total Quantity Defective'].sum()
     
     c_col, r_col = st.columns([1, 1])
-    
     with c_col:
         st.markdown("#### Step 1: Simulate Optimization Efficiencies")
-        downtime_reduction = st.slider("Reduce Unplanned Breakdowns via SMED & PM (%):", min_value=0, max_value=100, value=20, step=5)
-        scrap_reduction = st.slider("Minimize Scrap Counts via Poka-Yoke Controls (%):", min_value=0, max_value=100, value=30, step=5)
-        financial_value_per_unit = st.number_input("Assumed Finished Part Value ($ / Piece):", min_value=0.0, max_value=500.0, value=12.50, step=0.50)
+        downtime_reduction = st.slider("Reduce Unplanned Breakdowns (%):", min_value=0, max_value=100, value=20)
+        scrap_reduction = st.slider("Minimize Scrap Counts (%):", min_value=0, max_value=100, value=30)
+        financial_value_per_unit = st.number_input("Assumed Finished Part Value ($ / Piece):", min_value=0.0, value=12.50)
         
     with r_col:
         st.markdown("#### Step 2: Projected Returns Analysis")
-        
-        # Calculate simulation outputs
         simulated_unplanned = current_unplanned * (1 - (downtime_reduction / 100))
         simulated_scrap = current_scrap * (1 - (scrap_reduction / 100))
         
-        # Recalculate global metrics under optimized state bounds
         sim_net_operating = (df_filtered['Net Available Time'].sum()) - simulated_unplanned
-        sim_ideal_operating = df_filtered['Ideal Operating Time'].sum()
         sim_good_units = current_total_produced - simulated_scrap
         
         sim_avail = sim_net_operating / (df_filtered['Net Available Time'].sum())
-        sim_perf = avg_perf # Hold performance static
         sim_qual = sim_good_units / current_total_produced
-        sim_oee = sim_avail * sim_perf * sim_qual
+        sim_oee = sim_avail * avg_perf * sim_qual
         
-        # Financial impacts calculations
         extra_good_pieces = current_scrap - simulated_scrap
         revenue_recovery = extra_good_pieces * financial_value_per_unit
         hours_recovered = (current_unplanned - simulated_unplanned) / 60
         
-        # Yield comparison table layout
         st.markdown(f"""
-        * **Projected Optimized OEE:** <span style='color:#28A745; font-weight:bold; font-size:18px;'>{sim_oee*100:.2f}%</span> (Baseline: {avg_oee*100:.2f}%)
-        * **Total Capacity Production Time Reclaimed:** <span style='color:#007BFF; font-weight:bold; font-size:16px;'>{hours_recovered:.1f} Hours</span>
-        * **Scrap Units Retained as Finished Goods:** <span style='color:#007BFF; font-weight:bold; font-size:16px;'>{int(extra_good_pieces):,} Units</span>
-        """, unsafe_allow_html=True)
-        
-        st.metric(
-            label="Projected Gross Cost Recovery Opportunity", 
-            value=f"${revenue_recovery:,.2f}", 
-            delta=f"+ ${(extra_good_pieces * financial_value_per_unit):,.2f} Retained Value"
-        )
+        * **Projected Optimized OEE:** **{sim_oee*100:.2f}%** (Baseline: {avg_oee*100:.2f}%)
+        * **Time Reclaimed:** **{hours_recovered:.1f} Hours**
+        * **Scrap Units Retained:** **{int(extra_good_pieces):,} Units**
+        """)
+        st.metric(label="Projected Gross Cost Recovery Opportunity", value=f"${revenue_recovery:,.2f}")
 
-# ----------------------------------------------------------------
-# DATA EXPLORER & SYSTEM AUDIT GRID
-# ----------------------------------------------------------------
 st.markdown("---")
-with st.expander("🔍 View Raw Underlying Multi-Column Ingestion Matrix"):
+with st.expander("🔍 View Raw Underlying Data Matrix"):
     st.dataframe(df_filtered, use_container_width=True)
