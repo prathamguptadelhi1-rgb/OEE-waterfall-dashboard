@@ -531,8 +531,11 @@ with tab_summary:
     fig_trends.add_trace(go.Scatter(x=df['Run ID'], y=df['Quality (Q)'] * 100, name='Quality', line=dict(color=COLOR_QUAL, width=1.5, dash='longdash')))
     fig_trends.add_hline(y=85, line_dash="dash", line_color="#F75555", line_width=1,
                          annotation_text="World-Class Target (85%)", annotation_font_color="#F75555", annotation_font_size=11)
-    fig_trends.update_layout(**PLOTLY_LAYOUT, height=420, yaxis_title="Efficiency (%)", xaxis_title="Production Run",
-                             yaxis=dict(**PLOTLY_LAYOUT['yaxis'], range=[0, 105]))
+    
+    # FIX APPLIED HERE: Split update_layout and axis bounds constraints into separate safe pipeline commands
+    fig_trends.update_layout(**PLOTLY_LAYOUT, height=420, yaxis_title="Efficiency (%)", xaxis_title="Production Run")
+    fig_trends.update_yaxes(range=[0, 105])
+    
     st.plotly_chart(fig_trends, use_container_width=True)
 
     st.markdown("<div class='section-header'>Run-Level Breakdown</div>", unsafe_allow_html=True)
@@ -633,7 +636,7 @@ with tab_waterfall:
 
 
 # ================================================================
-# TAB 3 — IMPROVEMENT LEVERS  (BUG FIX: use pre-computed fleet means)
+# TAB 3 — IMPROVEMENT LEVERS  
 # ================================================================
 with tab_levers:
     st.markdown("<div class='section-header' style='margin-top:0;'>Prescriptive Improvement Playbook</div>", unsafe_allow_html=True)
@@ -782,7 +785,7 @@ with tab_simulator:
         results = [
             ("Projected OEE",        f"{sim_oee*100:.1f}%",        f"↑ +{oee_gain:.1f}pp from baseline",  COLOR_OEE),
             ("Availability (Sim)",   f"{sim_avail*100:.1f}%",      f"Was {avg_avail*100:.1f}%",            COLOR_AVAIL),
-            ("Time Reclaimed",       f"{hours_recovered:.1f} hrs",  f"{hours_recovered*60:.0f} min total",  COLOR_PERF),
+            ("Time Reclaimed",       f"{hours_recovered:.1f} hrs", f"{hours_recovered*60:.0f} min total",  COLOR_PERF),
             ("Scrap Units Saved",    f"{int(extra_good_units):,}",  f"of {int(current_scrap):,} total scrap", COLOR_QUAL),
             ("Revenue Recovery",     f"${revenue_recovery:,.0f}",   f"@ ${value_per_unit:.2f}/unit",         COLOR_AVAIL),
         ]
