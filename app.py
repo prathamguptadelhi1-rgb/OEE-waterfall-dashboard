@@ -532,7 +532,6 @@ with tab_summary:
     fig_trends.add_hline(y=85, line_dash="dash", line_color="#F75555", line_width=1,
                          annotation_text="World-Class Target (85%)", annotation_font_color="#F75555", annotation_font_size=11)
     
-    # FIX APPLIED HERE: Split update_layout and axis bounds constraints into separate safe pipeline commands
     fig_trends.update_layout(**PLOTLY_LAYOUT, height=420, yaxis_title="Efficiency (%)", xaxis_title="Production Run")
     fig_trends.update_yaxes(range=[0, 105])
     
@@ -614,9 +613,11 @@ with tab_waterfall:
         totals=dict(marker=dict(color=COLOR_OEE, line=dict(color=COLOR_OEE, width=0))),
         connector=dict(line=dict(color=COLOR_GREY, width=1, dash="dot"))
     ))
-    fig_wf.update_layout(**PLOTLY_LAYOUT, height=520,
-                          yaxis_title="Minutes",
-                          xaxis=dict(**PLOTLY_LAYOUT['xaxis'], tickangle=-20))
+    
+    # PATCH APPLIED HERE: Isolated properties to avoid multiple values keyword argument exception
+    fig_wf.update_layout(**PLOTLY_LAYOUT, height=520, yaxis_title="Minutes")
+    fig_wf.update_xaxes(tickangle=-20)
+    
     st.plotly_chart(fig_wf, use_container_width=True)
 
     # Loss summary table
@@ -814,9 +815,11 @@ with tab_simulator:
     fig_comp.add_trace(go.Bar(name='Simulated', x=categories_bar, y=simulated_vals,
                                marker_color=COLOR_OEE, text=[f"{v:.1f}%" for v in simulated_vals],
                                textposition='outside', textfont=dict(color="#e6edf3", size=11)))
-    fig_comp.update_layout(**PLOTLY_LAYOUT, barmode='group', height=340,
-                            yaxis=dict(**PLOTLY_LAYOUT['yaxis'], range=[0, 110]),
-                            yaxis_title="Efficiency (%)")
+    
+    # PROACTIVE PATCH: Resolved duplicate yaxis keyword footprint here as well to safeguard simulator execution
+    fig_comp.update_layout(**PLOTLY_LAYOUT, barmode='group', height=340, yaxis_title="Efficiency (%)")
+    fig_comp.update_yaxes(range=[0, 110])
+    
     st.plotly_chart(fig_comp, use_container_width=True)
 
 
