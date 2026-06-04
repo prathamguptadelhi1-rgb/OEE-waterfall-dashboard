@@ -541,28 +541,40 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ── NEW: Executive Snapshot Banner ───────────────────────────────
-items_html = ""
+items_html_parts = []
 for i, act in enumerate(exec_actions[:4], 1):
-    items_html += f"""
-    <div class='exec-action-item'>
-        <div class='exec-action-num' style='background:{act["color"]};'>{i}</div>
-        <div>
-            <div class='exec-action-text'>{act["title"]}</div>
-            <div class='exec-action-meta'>{act["meta"]}</div>
-        </div>
-    </div>"""
+    bg   = act["color"]
+    ttl  = act["title"]
+    meta = act["meta"]
+    items_html_parts.append(
+        "<div class='exec-action-item'>"
+        "<div class='exec-action-num' style='background:" + bg + ";'>" + str(i) + "</div>"
+        "<div>"
+        "<div class='exec-action-text'>" + ttl + "</div>"
+        "<div class='exec-action-meta'>" + meta + "</div>"
+        "</div>"
+        "</div>"
+    )
+items_html = "\n".join(items_html_parts)
 
 oc_html = ""
 if out_of_control:
-    oc_html = f"<div style='font-family:IBM Plex Mono,monospace;font-size:11px;color:{COLOR_RED};margin-top:10px;'>⚠ SPC Alert: Runs outside 3σ control limits → {', '.join(out_of_control)}</div>"
+    runs_str = ", ".join(out_of_control)
+    oc_html = (
+        "<div style='font-family:IBM Plex Mono,monospace;font-size:11px;color:"
+        + COLOR_RED
+        + ";margin-top:10px;'>\u26a0 SPC Alert: Runs outside 3\u03c3 limits \u2192 "
+        + runs_str + "</div>"
+    )
 
-st.markdown(f"""
-<div class='exec-banner'>
-    <div class='exec-banner-title'>⚡ Executive Priority Actions</div>
-    {items_html}
-    {oc_html}
-</div>
-""", unsafe_allow_html=True)
+st.markdown(
+    "<div class='exec-banner'>"
+    "<div class='exec-banner-title'>⚡ Executive Priority Actions</div>"
+    + items_html
+    + oc_html
+    + "</div>",
+    unsafe_allow_html=True
+)
 
 
 # ----------------------------------------------------------------
@@ -765,11 +777,13 @@ with tab_summary:
         textfont=dict(family='IBM Plex Mono, monospace', size=9, color='#8b949e'),
         marker=dict(
             size=14,
-            color=df['Total Financial Leakage'],
+            color=df['Total Financial Leakage'].tolist(),
             colorscale=[[0, COLOR_AVAIL], [0.5, COLOR_PERF], [1, COLOR_RED]],
             showscale=True,
-            colorbar=dict(title="$ Leakage", tickfont=dict(color='#8b949e', size=10),
-                          titlefont=dict(color='#8b949e', size=10)),
+            colorbar=dict(
+                title=dict(text="$ Leakage", font=dict(color='#8b949e', size=10)),
+                tickfont=dict(color='#8b949e', size=10)
+            ),
             line=dict(color='#0d1117', width=1)
         ),
         hovertemplate='<b>%{text}</b><br>OEE: %{x:.1f}%<br>Leakage: $%{y:,.0f}<extra></extra>'
@@ -1320,4 +1334,3 @@ with st.expander("🔍 Raw Data Matrix"):
         'Total Financial Leakage': '${:.0f}'
     }
     st.dataframe(df[display_cols].style.format(fmt), use_container_width=True, hide_index=True)
-
